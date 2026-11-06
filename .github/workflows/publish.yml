@@ -1,0 +1,40 @@
+name: publish-artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Actions run id that contains the artifact"
+        required: true
+        default: "42227861523"
+  push:
+    paths:
+      - ".github/workflows/publish.yml"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download artifact from build run
+        uses: actions/download-artifact@v4
+        with:
+          name: nura-merlin-flashable
+          run-id: ${{ github.event.inputs.run_id || '42227861523' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: out
+
+      - name: Show files
+        run: ls -lah out
+
+      - name: Create release with artifact
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: merlin-${{ github.event.inputs.run_id || '42227861523' }}
+          name: Nura merlin build ${{ github.event.inputs.run_id || '42227861523' }}
+          body: "Built by GitHub Actions for xiaomi-merlin (Nura/postmarketOS, XFCE4)."
+          files: out/*
+          token: ${{ secrets.GITHUB_TOKEN }}
