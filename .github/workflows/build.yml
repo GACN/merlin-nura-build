@@ -48,6 +48,7 @@ jobs:
           set -euxo pipefail
           mkdir -p "$HOME/.config" "$HOME/.local/var/pmbootstrap"
           printf '[pmbootstrap]\n' > "$HOME/.config/pmbootstrap_v3.cfg"
+          printf '8\n' > "$HOME/.local/var/pmbootstrap/version"
           PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
           $PMB config aports "$HOME/pmaports"
           $PMB config device xiaomi-merlin
