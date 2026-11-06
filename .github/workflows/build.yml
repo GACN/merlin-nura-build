@@ -31,6 +31,8 @@ jobs:
           set -euxo pipefail
           git clone --depth 1 https://gitlab.nura.eco/nura/pmbootstrap.git "$HOME/pmbootstrap"
           git clone --depth 1 https://gitlab.nura.eco/nura/pmaports.git "$HOME/pmaports"
+          git -C "$HOME/pmaports" remote set-url origin https://gitlab.postmarketos.org/postMarketOS/pmaports.git
+          git -C "$HOME/pmaports" remote -v
           git -C "$HOME/pmaports" log -1 --oneline
           git -C "$HOME/pmbootstrap" log -1 --oneline
           python3 "$HOME/pmbootstrap/pmbootstrap.py" --version
