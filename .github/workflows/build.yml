@@ -1,0 +1,147 @@
+name: build-nura-merlin
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
+      - name: Show runner info
+        run: |
+          uname -a
+          nproc
+          free -h
+          df -h /
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get install -y --no-install-recommends kpartx e2fsprogs
+          command -v kpartx losetup git python3 openssl tar ps
+
+      - name: Clone pmbootstrap and pmaports
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://gitlab.nura.eco/nura/pmbootstrap.git "$HOME/pmbootstrap"
+          git clone --depth 1 https://gitlab.nura.eco/nura/pmaports.git "$HOME/pmaports"
+          git -C "$HOME/pmaports" remote set-url origin https://gitlab.postmarketos.org/postMarketOS/pmaports.git
+          git -C "$HOME/pmaports" log -1 --oneline
+          git -C "$HOME/pmbootstrap" log -1 --oneline
+          python3 "$HOME/pmbootstrap/pmbootstrap.py" --version
+
+      - name: Enable archived merlin packages and apply smb1351 fix
+        run: |
+          set -euxo pipefail
+          mv "$HOME/pmaports/device/archived/device-xiaomi-merlin" "$HOME/pmaports/device/testing/"
+          mv "$HOME/pmaports/device/archived/linux-xiaomi-merlin" "$HOME/pmaports/device/testing/"
+          PKG="$HOME/pmaports/device/testing/linux-xiaomi-merlin"
+          base64 -d "$GITHUB_WORKSPACE/smb1351-null-check.patch.b64" > "$PKG/smb1351-null-check.patch"
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, os
+          pkg = Path(os.environ["HOME"]) / "pmaports/device/testing/linux-xiaomi-merlin"
+          apk = pkg / "APKBUILD"
+          s = apk.read_text().replace("\r\n", "\n")
+          data = (pkg / "smb1351-null-check.patch").read_bytes()
+          h = hashlib.sha512(data).hexdigest()
+          s = s.replace("\tuse_system_dtc.patch\n\"", "\tuse_system_dtc.patch\n\tsmb1351-null-check.patch\n\"")
+          s = s.replace("  use_system_dtc.patch\n\"", f"  use_system_dtc.patch\n{h}  smb1351-null-check.patch\n\"")
+          apk.write_text(s)
+          PY
+          test "$(grep -c smb1351-null-check.patch "$PKG/APKBUILD")" -eq 2
+          grep -n "smb1351" "$PKG/APKBUILD"
+
+      - name: Create config and configure pmbootstrap (non-interactive)
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/.config" "$HOME/.local/var/pmbootstrap"
+          printf '[pmbootstrap]\n' > "$HOME/.config/pmbootstrap_v3.cfg"
+          printf '8\n' > "$HOME/.local/var/pmbootstrap/version"
+          PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
+          $PMB config aports "$HOME/pmaports"
+          $PMB config device xiaomi-merlin
+          $PMB config ui xfce4
+          $PMB config user merlin
+          $PMB config hostname merlin
+          $PMB config timezone Asia/Shanghai
+          $PMB config locale en_US.UTF-8
+          $PMB config is_default_channel True
+          $PMB config build_pkgs_on_install True
+          $PMB config jobs 4
+          $PMB config
+
+      - name: Build kernel (linux-xiaomi-merlin)
+        run: |
+          set -euxo pipefail
+          PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
+          $PMB -v build --arch=aarch64 linux-xiaomi-merlin 2>&1 | tee "$HOME/kernel-build.log"
+
+      - name: Build device package
+        run: |
+          set -euxo pipefail
+          PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
+          $PMB -v build --arch=aarch64 device-xiaomi-merlin 2>&1 | tee "$HOME/device-build.log"
+
+      - name: Build rootfs and TWRP recovery zip
+        run: |
+          set -euxo pipefail
+          PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
+          $PMB -v install --android-recovery-zip --recovery-install-partition userdata --password merlin1234 --no-sshd 2>&1 | tee "$HOME/install.log"
+
+      - name: Export boot.img
+        run: |
+          set -eux
+          PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
+          $PMB -v export "$HOME/export" 2>&1 | tee "$HOME/export.log" || true
+          ls -la "$HOME/export" || true
+
+      - name: Collect artifacts
+        if: always()
+        run: |
+          set -eux
+          mkdir -p out logs
+          find -L "$HOME/export" -maxdepth 1 -type f -exec cp -v {} out/ \; 2>/dev/null || true
+          cp -v "$HOME/.local/var/pmbootstrap/chroot_buildroot_aarch64/var/lib/postmarketos-android-recovery-installer/pmos-xiaomi-merlin.zip" out/ || true
+          cp -v "$HOME"/*.log logs/ || true
+          cp -v "$HOME/.local/var/pmbootstrap/log.txt" logs/pmbootstrap.log || true
+          ls -lah out logs
+          du -sh out logs || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: logs/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload flashable artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nura-merlin-flashable
+          path: out/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Publish release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: merlin-${{ github.run_id }}
+          name: Nura merlin ${{ github.run_id }}
+          body: "Built by GitHub Actions for xiaomi-merlin (Nura/postmarketOS, XFCE4, smb1351 crash fix)."
+          files: out/*
+          token: ${{ secrets.GITHUB_TOKEN }}
