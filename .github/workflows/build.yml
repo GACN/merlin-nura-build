@@ -1,0 +1,121 @@
+name: build-nura-merlin
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Show runner info
+        run: |
+          uname -a
+          nproc
+          free -h
+          df -h /
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            kpartx e2fsprogs git python3 openssl ca-certificates
+
+      - name: Clone pmbootstrap and pmaports
+        run: |
+          set -eux
+          git clone --depth 1 https://gitlab.nura.eco/nura/pmbootstrap.git "$HOME/pmbootstrap"
+          git clone --depth 1 https://gitlab.nura.eco/nura/pmaports.git "$HOME/pmaports"
+          git -C "$HOME/pmaports" log -1 --oneline
+          git -C "$HOME/pmbootstrap" log -1 --oneline
+
+      - name: Enable archived merlin device + kernel packages
+        run: |
+          set -eux
+          mv "$HOME/pmaports/device/archived/device-xiaomi-merlin" "$HOME/pmaports/device/testing/"
+          mv "$HOME/pmaports/device/archived/linux-xiaomi-merlin" "$HOME/pmaports/device/testing/"
+          ls -la "$HOME/pmaports/device/testing/device-xiaomi-merlin"
+          ls -la "$HOME/pmaports/device/testing/linux-xiaomi-merlin"
+
+      - name: Configure pmbootstrap (non-interactive)
+        run: |
+          set -eux
+          PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
+          $PMB config aports "$HOME/pmaports"
+          $PMB config device xiaomi-merlin
+          $PMB config ui xfce4
+          $PMB config user merlin
+          $PMB config hostname merlin
+          $PMB config timezone Asia/Shanghai
+          $PMB config locale en_US.UTF-8
+          $PMB config is_default_channel True
+          $PMB config build_pkgs_on_install True
+          $PMB config jobs 4
+          $PMB config
+
+      - name: Build kernel (linux-xiaomi-merlin)
+        run: |
+          set -eux
+          PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
+          $PMB -v build --arch=aarch64 linux-xiaomi-merlin 2>&1 | tee "$HOME/kernel-build.log"
+
+      - name: Build device package
+        run: |
+          set -eux
+          PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
+          $PMB -v build --arch=aarch64 device-xiaomi-merlin 2>&1 | tee "$HOME/device-build.log"
+
+      - name: Build rootfs and TWRP recovery zip
+        run: |
+          set -eux
+          PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
+          $PMB -v install --android-recovery-zip --password merlin1234 --no-sshd 2>&1 | tee "$HOME/install.log"
+
+      - name: Export boot.img and create vbmeta.img
+        run: |
+          set -eux
+          PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
+          $PMB -v export "$HOME/export" 2>&1 | tee "$HOME/export.log" || true
+          ls -la "$HOME/export" || true
+
+          $PMB chroot -- apk add avbtool 2>&1 | tee "$HOME/vbmeta.log" || true
+          $PMB chroot -- avbtool make_vbmeta_image --flags 2 --padding_size 2048 --output /vbmeta.img 2>&1 | tee -a "$HOME/vbmeta.log" || true
+          cp -v "$HOME/.local/var/pmbootstrap/chroot_native/vbmeta.img" "$HOME/vbmeta.img" || true
+
+      - name: Collect artifacts
+        if: always()
+        run: |
+          set -eux
+          mkdir -p out logs
+          find "$HOME/export" -maxdepth 1 -type f -exec cp -vL {} out/ \; 2>/dev/null || true
+          cp -v "$HOME/.local/var/pmbootstrap/chroot_buildroot_aarch64/var/lib/postmarketos-android-recovery-installer/pmos-xiaomi-merlin.zip" out/ || true
+          cp -v "$HOME/vbmeta.img" out/ || true
+          cp -v "$HOME"/*.log logs/ || true
+          cp -v "$HOME/.local/var/pmbootstrap/log.txt" logs/pmbootstrap.log || true
+          ls -lah out logs
+          du -sh out logs || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: logs/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload flashable artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nura-merlin-flashable
+          path: out/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
