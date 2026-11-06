@@ -23,29 +23,31 @@ jobs:
 
       - name: Install host dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            kpartx e2fsprogs git python3 openssl ca-certificates
+          sudo apt-get install -y --no-install-recommends kpartx e2fsprogs
+          command -v kpartx losetup git python3 openssl tar ps
 
       - name: Clone pmbootstrap and pmaports
         run: |
-          set -eux
+          set -euxo pipefail
           git clone --depth 1 https://gitlab.nura.eco/nura/pmbootstrap.git "$HOME/pmbootstrap"
           git clone --depth 1 https://gitlab.nura.eco/nura/pmaports.git "$HOME/pmaports"
           git -C "$HOME/pmaports" log -1 --oneline
           git -C "$HOME/pmbootstrap" log -1 --oneline
+          python3 "$HOME/pmbootstrap/pmbootstrap.py" --version
 
       - name: Enable archived merlin device + kernel packages
         run: |
-          set -eux
+          set -euxo pipefail
           mv "$HOME/pmaports/device/archived/device-xiaomi-merlin" "$HOME/pmaports/device/testing/"
           mv "$HOME/pmaports/device/archived/linux-xiaomi-merlin" "$HOME/pmaports/device/testing/"
           ls -la "$HOME/pmaports/device/testing/device-xiaomi-merlin"
           ls -la "$HOME/pmaports/device/testing/linux-xiaomi-merlin"
 
-      - name: Configure pmbootstrap (non-interactive)
+      - name: Create config and configure pmbootstrap (non-interactive)
         run: |
-          set -eux
+          set -euxo pipefail
+          mkdir -p "$HOME/.config" "$HOME/.local/var/pmbootstrap"
+          printf '[pmbootstrap]\n' > "$HOME/.config/pmbootstrap_v3.cfg"
           PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
           $PMB config aports "$HOME/pmaports"
           $PMB config device xiaomi-merlin
@@ -61,21 +63,21 @@ jobs:
 
       - name: Build kernel (linux-xiaomi-merlin)
         run: |
-          set -eux
+          set -euxo pipefail
           PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
           $PMB -v build --arch=aarch64 linux-xiaomi-merlin 2>&1 | tee "$HOME/kernel-build.log"
 
       - name: Build device package
         run: |
-          set -eux
+          set -euxo pipefail
           PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
           $PMB -v build --arch=aarch64 device-xiaomi-merlin 2>&1 | tee "$HOME/device-build.log"
 
       - name: Build rootfs and TWRP recovery zip
         run: |
-          set -eux
+          set -euxo pipefail
           PMB="python3 $HOME/pmbootstrap/pmbootstrap.py"
-          $PMB -v install --android-recovery-zip --password merlin1234 --no-sshd 2>&1 | tee "$HOME/install.log"
+          $PMB -v install --android-recovery-zip --recovery-install-partition userdata --password merlin1234 --no-sshd 2>&1 | tee "$HOME/install.log"
 
       - name: Export boot.img and create vbmeta.img
         run: |
